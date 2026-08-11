@@ -6,3 +6,11 @@ coverage/
 *.log
 .env*
 !.env.example
+# Ignore local environment files containing secrets
+.env
+.env.local
+.env.*.local
+
+# Do NOT ignore the example template
+!.env.example
+.env.example
