@@ -1,0 +1,6 @@
+{
+  "name": "Nangavalli Certificate Generator 2026",
+  "description": "Official Independence Day 2026 Certificate Generator for Government Schools in Nangavalli Block, Salem District",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
