@@ -4,7 +4,7 @@ import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json());
 
@@ -45,7 +45,6 @@ function saveCertificates(certificates: ICertificate[]) {
 
 let certificatesDb: ICertificate[] = loadCertificates();
 
-// Helper to generate unique certificate ID
 function generateCertificateId(): string {
   const year = '2026';
   const prefix = 'NGV';
@@ -53,9 +52,6 @@ function generateCertificateId(): string {
   return `${prefix}-${year}-${randomNum}`;
 }
 
-// REST API Endpoints
-
-// GET /api/certificates - Get all certificates
 app.get('/api/certificates', (req, res) => {
   const { search, competition, school, classNum } = req.query;
   let filtered = [...certificatesDb];
@@ -83,13 +79,11 @@ app.get('/api/certificates', (req, res) => {
     filtered = filtered.filter((c) => c.class === parseInt(classNum, 10));
   }
 
-  // Sort by newest
   filtered.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   res.json({ success: true, count: filtered.length, data: filtered });
 });
 
-// GET /api/certificates/:id - Get certificate by certificateId
 app.get('/api/certificates/:id', (req, res) => {
   const cert = certificatesDb.find(
     (c) => c.certificateId === req.params.id || c._id === req.params.id
@@ -100,12 +94,10 @@ app.get('/api/certificates/:id', (req, res) => {
   res.json({ success: true, data: cert });
 });
 
-// POST /api/certificates - Save form data and generate unique certificateId
 app.post('/api/certificates', (req, res) => {
   try {
     const { studentName, class: classNum, schoolName, udiseCode, competitionName, prizePlace } = req.body;
 
-    // Validation
     if (!studentName || !studentName.trim()) {
       return res.status(400).json({ success: false, message: 'மாணவர் பெயர் தேவை (Student name is required)' });
     }
@@ -133,7 +125,6 @@ app.post('/api/certificates', (req, res) => {
       return res.status(400).json({ success: false, message: 'செல்லுபடியாகும் பரிசைத் தேர்ந்தெடுக்கவும்' });
     }
 
-    // Generate Certificate ID
     let certificateId = generateCertificateId();
     while (certificatesDb.some((c) => c.certificateId === certificateId)) {
       certificateId = generateCertificateId();
@@ -164,7 +155,6 @@ app.post('/api/certificates', (req, res) => {
   }
 });
 
-// POST /api/certificates/bulk - Bulk generate certificates
 app.post('/api/certificates/bulk', (req, res) => {
   try {
     const { students } = req.body;
@@ -210,7 +200,6 @@ app.post('/api/certificates/bulk', (req, res) => {
   }
 });
 
-// DELETE /api/certificates/:id - Delete a certificate
 app.delete('/api/certificates/:id', (req, res) => {
   const index = certificatesDb.findIndex(
     (c) => c.certificateId === req.params.id || c._id === req.params.id
