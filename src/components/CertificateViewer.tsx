@@ -12,41 +12,121 @@ interface Props {
   readOnly?: boolean;
 }
 
+const FALLBACK_COLOR = '#475569';
+
+/**
+ * html2canvas can fail when a stylesheet contains modern CSS color functions
+ * such as oklch()/oklab()/color-mix(). Tailwind CSS v4 uses these functions
+ * in generated styles. Replace unsupported functions in the cloned document
+ * only; the live application keeps its original styling.
+ */
+const sanitizeCssForHtml2Canvas = (cssText: string): string => {
+  return cssText
+    .replace(/oklch\([^)]*\)/gi, FALLBACK_COLOR)
+    .replace(/oklab\([^)]*\)/gi, FALLBACK_COLOR)
+    .replace(/color-mix\([^)]*\)/gi, FALLBACK_COLOR)
+    .replace(/color\([^)]*\)/gi, FALLBACK_COLOR)
+    .replace(/lab\([^)]*\)/gi, FALLBACK_COLOR)
+    .replace(/lch\([^)]*\)/gi, FALLBACK_COLOR);
+};
+
+const prepareCloneForHtml2Canvas = (clonedDoc: Document) => {
+  // 1. Sanitize generated <style> blocks, which is the main source of
+  // Tailwind v4 oklch parsing errors in html2canvas.
+  clonedDoc.querySelectorAll('style').forEach((style) => {
+    style.textContent = sanitizeCssForHtml2Canvas(style.textContent || '');
+  });
+
+  // 2. Sanitize inline style attributes as well.
+  clonedDoc.querySelectorAll<HTMLElement>('[style]').forEach((element) => {
+    const inlineStyle = element.getAttribute('style');
+    if (inlineStyle) {
+      element.setAttribute('style', sanitizeCssForHtml2Canvas(inlineStyle));
+    }
+  });
+
+  // 3. Explicitly neutralize unsupported computed colors if the browser
+  // exposes them in the cloned document.
+  const colorProperties = [
+    'color',
+    'background-color',
+    'border-top-color',
+    'border-right-color',
+    'border-bottom-color',
+    'border-left-color',
+    'outline-color',
+    'text-decoration-color',
+    'column-rule-color',
+    'caret-color',
+    'fill',
+    'stroke',
+    'box-shadow',
+    'text-shadow',
+  ];
+
+  clonedDoc.querySelectorAll<HTMLElement>('*').forEach((element) => {
+    const computed = clonedDoc.defaultView?.getComputedStyle(element);
+    if (!computed) return;
+
+    colorProperties.forEach((property) => {
+      const value = computed.getPropertyValue(property);
+      if (value && /(oklch|oklab|color-mix|lab\(|lch\()/i.test(value)) {
+        element.style.setProperty(property, FALLBACK_COLOR, 'important');
+      }
+    });
+  });
+};
+
+const waitForCertificateRender = async () => {
+  if (document.fonts?.ready) {
+    await document.fonts.ready;
+  }
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+};
+
 export const CertificateViewer: React.FC<Props> = ({ certificate, onEdit, readOnly = false }) => {
   const certRef = useRef<HTMLDivElement>(null);
   const [downloading, setDownloading] = useState<'png' | 'pdf' | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // Clean oklch colors from cloned document styles before html2canvas processes it
-  const prepareCloneForHtml2Canvas = (clonedDoc: Document) => {
-    const styleTags = clonedDoc.querySelectorAll('style');
-    styleTags.forEach((style) => {
-      if (style.innerHTML && style.innerHTML.includes('oklch')) {
-        style.innerHTML = style.innerHTML.replace(/oklch\([^)]+\)/g, '#1e293b');
-      }
+  const renderCertificateCanvas = async (scale: number) => {
+    if (!certRef.current) {
+      throw new Error('Certificate element is not available.');
+    }
+
+    await waitForCertificateRender();
+
+    return html2canvas(certRef.current, {
+      scale,
+      useCORS: true,
+      allowTaint: false,
+      backgroundColor: '#ffffff',
+      logging: false,
+      imageTimeout: 15000,
+      onclone: prepareCloneForHtml2Canvas,
     });
   };
 
   const handleDownloadPNG = async () => {
     if (!certRef.current) return;
+
     try {
       setDownloading('png');
-      const canvas = await html2canvas(certRef.current, {
-        scale: 2,
-        useCORS: true,
-        backgroundColor: '#ffffff',
-        logging: false,
-        onclone: prepareCloneForHtml2Canvas,
-      });
-
+      const canvas = await renderCertificateCanvas(2);
       const image = canvas.toDataURL('image/png');
+
       const link = document.createElement('a');
       link.href = image;
       link.download = `Certificate_${certificate.studentName}_${certificate.certificateId}.png`;
+      document.body.appendChild(link);
       link.click();
+      link.remove();
     } catch (err) {
       console.error('Error generating PNG:', err);
-      alert('சான்றிதழ் படம் பதிவிறக்கம் செய்வதில் பிழை (Error exporting PNG)');
+      const message = err instanceof Error ? err.message : String(err);
+      alert(`சான்றிதழ் படம் பதிவிறக்கம் செய்வதில் பிழை (Error exporting PNG)\n\n${message}`);
     } finally {
       setDownloading(null);
     }
@@ -54,17 +134,12 @@ export const CertificateViewer: React.FC<Props> = ({ certificate, onEdit, readOn
 
   const handleDownloadPDF = async () => {
     if (!certRef.current) return;
+
     try {
       setDownloading('pdf');
-      const canvas = await html2canvas(certRef.current, {
-        scale: 2.5,
-        useCORS: true,
-        backgroundColor: '#ffffff',
-        logging: false,
-        onclone: prepareCloneForHtml2Canvas,
-      });
-
+      const canvas = await renderCertificateCanvas(2.5);
       const imgData = canvas.toDataURL('image/jpeg', 0.98);
+
       const pdf = new jsPDF({
         orientation: 'landscape',
         unit: 'mm',
@@ -74,11 +149,12 @@ export const CertificateViewer: React.FC<Props> = ({ certificate, onEdit, readOn
       const pdfWidth = pdf.internal.pageSize.getWidth();
       const pdfHeight = pdf.internal.pageSize.getHeight();
 
-      pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
+      pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight, undefined, 'FAST');
       pdf.save(`Certificate_${certificate.studentName}_${certificate.certificateId}.pdf`);
     } catch (err) {
       console.error('Error generating PDF:', err);
-      alert('சான்றிதழ் PDF பதிவிறக்கம் செய்வதில் பிழை (Error exporting PDF)');
+      const message = err instanceof Error ? err.message : String(err);
+      alert(`சான்றிதழ் PDF பதிவிறக்கம் செய்வதில் பிழை (Error exporting PDF)\n\n${message}`);
     } finally {
       setDownloading(null);
     }
@@ -191,7 +267,7 @@ export const CertificateViewer: React.FC<Props> = ({ certificate, onEdit, readOn
           style={{
             backgroundColor: '#ffffff',
             color: '#0f172a',
-            border: '12px solid #FF9933', // Saffron outer border
+            border: '12px solid #FF9933',
             boxSizing: 'border-box',
             fontFamily: "'Anek Tamil', 'Mukta Malalar', 'Tiro Tamil', Georgia, serif",
           }}
@@ -200,14 +276,14 @@ export const CertificateViewer: React.FC<Props> = ({ certificate, onEdit, readOn
           <div
             className="absolute inset-1.5 pointer-events-none"
             style={{
-              border: '3px solid #138808', // Green inner border
+              border: '3px solid #138808',
               boxSizing: 'border-box',
             }}
           />
           <div
             className="absolute inset-3 pointer-events-none"
             style={{
-              border: '1.5px stroke #000080', // Navy Blue fine line
+              border: '1.5px solid #000080',
               boxSizing: 'border-box',
             }}
           />
@@ -262,16 +338,12 @@ export const CertificateViewer: React.FC<Props> = ({ certificate, onEdit, readOn
 
           {/* Certificate Main Content */}
           <div className="relative z-10 w-full h-[670px] px-8 py-2 flex flex-col justify-between">
-            
             {/* Header Section */}
             <div className="w-full flex flex-col items-center justify-center text-center space-y-0.5 pt-1">
-              {/* Top Row - Tamil Nadu Emblem */}
               <div className="flex justify-center mb-1">
                 <TNEmblem className="w-16 h-16" />
               </div>
 
-              {/* Title Headers */}
-              {/* 1. தமிழ்நாடு அரசு */}
               <h1
                 className="text-2xl font-black tracking-wide leading-tight"
                 style={{ color: '#000080' }}
@@ -279,7 +351,6 @@ export const CertificateViewer: React.FC<Props> = ({ certificate, onEdit, readOn
                 தமிழ்நாடு அரசு
               </h1>
 
-              {/* 2. தொடக்கக் கல்வித் துறை */}
               <h2
                 className="text-lg font-extrabold tracking-wide leading-tight"
                 style={{ color: '#800020' }}
@@ -287,7 +358,6 @@ export const CertificateViewer: React.FC<Props> = ({ certificate, onEdit, readOn
                 தொடக்கக் கல்வித் துறை
               </h2>
 
-              {/* 3. நங்கவள்ளி ஒன்றியம், சேலம் மாவட்டம் */}
               <h3
                 className="text-base font-bold tracking-normal leading-tight"
                 style={{ color: '#138808' }}
@@ -295,7 +365,6 @@ export const CertificateViewer: React.FC<Props> = ({ certificate, onEdit, readOn
                 நங்கவள்ளி ஒன்றியம் , சேலம் மாவட்டம்
               </h3>
 
-              {/* 4. Event Name (80th Independence Day Celebration - 2026) */}
               <div className="pt-0.5 flex flex-col items-center">
                 <div
                   className="px-5 py-0.5 rounded-full text-lg font-black shadow-sm"
@@ -318,8 +387,6 @@ export const CertificateViewer: React.FC<Props> = ({ certificate, onEdit, readOn
 
             {/* Main Certificate Body Text */}
             <div className="my-auto px-4 py-1 text-center text-slate-900 leading-8 text-lg font-medium">
-              
-              {/* Line 1 & 2 */}
               <div className="flex flex-wrap items-baseline justify-center gap-x-2">
                 <span
                   className="border-b-2 font-extrabold px-3 min-w-[240px] text-center inline-block"
@@ -338,7 +405,6 @@ export const CertificateViewer: React.FC<Props> = ({ certificate, onEdit, readOn
                 </span>
               </div>
 
-              {/* Line 3 & 4 */}
               <div className="flex flex-wrap items-baseline justify-center gap-x-2 mt-1">
                 <span
                   className="border-b-2 font-extrabold px-3 min-w-[160px] text-center inline-block"
@@ -370,7 +436,6 @@ export const CertificateViewer: React.FC<Props> = ({ certificate, onEdit, readOn
                 </span>
               </div>
 
-              {/* Line 5 & 6 */}
               <div className="flex flex-wrap items-baseline justify-center gap-x-2 mt-1">
                 <span
                   className="border-b-2 font-extrabold px-5 text-center inline-block"
@@ -386,7 +451,6 @@ export const CertificateViewer: React.FC<Props> = ({ certificate, onEdit, readOn
               <div className="mt-0.5 font-bold text-slate-800">
                 இச்சான்றிதழ் வழங்கப்படுகிறது.
               </div>
-
             </div>
 
             {/* Bottom Signatures & ID */}
@@ -400,7 +464,6 @@ export const CertificateViewer: React.FC<Props> = ({ certificate, onEdit, readOn
                 Certificate ID {certificate.certificateId}
               </div>
             </div>
-
           </div>
 
           {/* Bottom Tri-Color Banner Strip */}
